@@ -1,3 +1,8 @@
+#include <sys/mman.h>
+#include <unistd.h>
+#include <sys/types.h>
+#include <errno.h>
+#include <string.h>
 #include "cpuminer-config.h"
 #include "miner.h"
 
@@ -9,7 +14,8 @@ struct ramhog_pool *pramhog = NULL;
 struct ramhog_pool *ramhog_thread_pool(uint32_t Nin, uint32_t Cin, uint32_t Iin, int numSimultaneousIn, int numWorkersIn)
 {
     int i;
-    struct ramhog_pool *pool = calloc(1, sizeof(struct ramhog_pool));
+    struct ramhog_pool *pool;
+    pool = (struct ramhog_pool*)calloc(1, sizeof(struct ramhog_pool));
     pool->N = Nin;
     pool->C = Cin;
     pool->I = Iin;
@@ -22,7 +28,22 @@ struct ramhog_pool *ramhog_thread_pool(uint32_t Nin, uint32_t Cin, uint32_t Iin,
         pool->scratchpads[i] = (uint64_t **)calloc(pool->N, sizeof(uint64_t *));
         for (int j=0; j < pool->N; j++)
         {
-            pool->scratchpads[i][j] = (uint64_t *)calloc(pool->C, sizeof(uint64_t));
+            #if defined __unix__ && (!defined __APPLE__) && (!defined __CYGWIN__)
+            pool->scratchpads[i][j] = (uint64_t*)mmap(0, pool->C * sizeof(uint64_t), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | MAP_POPULATE | MAP_NORESERVE, 0, 0);
+            if(pool->scratchpads[i][j] == MAP_FAILED)
+            {
+                applog(LOG_INFO, "Hugepages: mmap(%d,%d) failed.", i, j);
+                pool->scratchpads[i][j] = (uint64_t*)calloc(pool->C, sizeof(uint64_t));
+            }
+            madvise(pool->scratchpads[i][j], pool->C * sizeof(uint64_t), MADV_RANDOM | MADV_DOFORK | MADV_DONTDUMP | MADV_HUGEPAGE);
+            if(!geteuid())
+                mlock(pool, sizeof(uint64_t));
+            #elif defined _WIN32 && (!defined __CYGWIN__)
+            pool->scratchpads[i][j] = VirtualAlloc(NULL, pool->C * sizeof(uint64_t), MEM_LARGE_PAGES, PAGE_READWRITE);
+            if(!pool->scratchpads[i][j] pool->scratchpads[i][j] = (uint64_t *)calloc(pool->C, sizeof(uint64_t));
+            #else
+            pool->scratchpads[i][j] = (uint64_t*)calloc(pool->C, sizeof(uint64_t));
+            #endif
             if(pool->scratchpads[i][j] == NULL)
             {
                 applog(LOG_INFO, "Failed to allocate scratchpad, not enough memory?");

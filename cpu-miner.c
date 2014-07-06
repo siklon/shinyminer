@@ -1072,19 +1072,28 @@ static void *miner_thread(void *userdata)
 	/* Set worker threads to nice 19 and then preferentially to SCHED_IDLE
 	 * and if that fails, then SCHED_BATCH. No need for this to be an
 	 * error if it fails */
-	if (!opt_benchmark) {
+	/*if (!opt_benchmark) {
 		setpriority(PRIO_PROCESS, 0, 19);
 		drop_policy();
-	}
+	}*/
+     #ifdef __linux
+    if (!opt_benchmark) {
+        if(!geteuid())
+            setpriority(PRIO_PROCESS, 0, -14);
+        else
+            applog(LOG_INFO, "I go faster as root.");
+        drop_policy();
+    }
+	#endif
 
 	/* Cpu affinity only makes sense if the number of threads is a multiple
 	 * of the number of CPUs */
-	if (num_processors > 1 && opt_n_threads % num_processors == 0) {
+	/*if (num_processors > 1 && opt_n_threads % num_processors == 0) {
 		if (!opt_quiet)
 			applog(LOG_INFO, "Binding thread %d to cpu %d",
 			       thr_id, thr_id % num_processors);
 		affine_to_cpu(thr_id, thr_id % num_processors);
-	}
+	}*/
 	
 	if (opt_algo == ALGO_SCRYPT) {
 		scratchbuf = scrypt_buffer_alloc(opt_scrypt_n);
