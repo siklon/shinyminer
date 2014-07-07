@@ -23,6 +23,7 @@ struct ramhog_pool *ramhog_thread_pool(uint32_t Nin, uint32_t Cin, uint32_t Iin,
     pool->numWorkers = numWorkersIn;
     pool->scratchpads = (uint64_t ***)calloc(pool->numSimultaneous, sizeof(uint64_t **));
     bool dispose = false;
+    bool enabled = false;
     for (int i=0; i < pool->numSimultaneous; i++)
     {
         pool->scratchpads[i] = (uint64_t **)calloc(pool->N, sizeof(uint64_t *));
@@ -35,12 +36,31 @@ struct ramhog_pool *ramhog_thread_pool(uint32_t Nin, uint32_t Cin, uint32_t Iin,
                 applog(LOG_INFO, "Hugepages: mmap(%d,%d) failed.", i, j);
                 pool->scratchpads[i][j] = (uint64_t*)calloc(pool->C, sizeof(uint64_t));
             }
-            madvise(pool->scratchpads[i][j], pool->C * sizeof(uint64_t), MADV_RANDOM | MADV_DOFORK | MADV_DONTDUMP | MADV_HUGEPAGE);
+            else
+            {
+                if(!enabled)
+                {
+                    enabled = true;
+                    applog(LOG_INFO, "Hugepages enabled!");
+                }
+            }
+            madvise(pool->scratchpads[i][j], pool->C * sizeof(uint64_t), MADV_RANDOM | MADV_HUGEPAGE);
             if(!geteuid())
                 mlock(pool, sizeof(uint64_t));
             #elif defined _WIN32 && (!defined __CYGWIN__)
             pool->scratchpads[i][j] = VirtualAlloc(NULL, pool->C * sizeof(uint64_t), MEM_LARGE_PAGES, PAGE_READWRITE);
-            if(!pool->scratchpads[i][j] pool->scratchpads[i][j] = (uint64_t *)calloc(pool->C, sizeof(uint64_t));
+            if(!pool->scratchpads[i][j])
+            {
+                pool->scratchpads[i][j] = (uint64_t *)calloc(pool->C, sizeof(uint64_t));
+            }
+            else
+            {
+                if(!enabled)
+                {
+                    enabled = true;
+                    applog(LOG_INFO, "Hugepages enabled!");
+                }
+            }
             #else
             pool->scratchpads[i][j] = (uint64_t*)calloc(pool->C, sizeof(uint64_t));
             #endif
