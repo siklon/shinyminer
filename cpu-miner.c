@@ -101,14 +101,10 @@ struct workio_cmd {
 };
 
 enum algos {
-	ALGO_SCRYPT,		/* scrypt(1024,1,1) */
-	ALGO_SHA256D,		/* SHA-256d */
     ALGO_RAMHOG
 };
 
 static const char *algo_names[] = {
-	[ALGO_SCRYPT]		= "scrypt",
-	[ALGO_SHA256D]		= "sha256d",
     [ALGO_RAMHOG]   = "ramhog"       
 };
 
@@ -131,8 +127,7 @@ int opt_timeout = 0;
 static int opt_scantime = 5;
 static const bool opt_time = true;
 static enum algos opt_algo = ALGO_RAMHOG;
-static int opt_scrypt_n = 1024;
-static int opt_n_threads;
+static int opt_n_threads = 1;
 static int num_processors;
 static char *rpc_url;
 static char *rpc_userpass;
@@ -173,10 +168,6 @@ struct option {
 static char const usage[] = "\
 Usage: " PROGRAM_NAME " [OPTIONS]\n\
 Options:\n\
-  -a, --algo=ALGO       specify the algorithm to use\n\
-                          scrypt    scrypt(1024, 1, 1) (default)\n\
-                          scrypt:N  scrypt(N, 1, 1)\n\
-                          sha256d   SHA-256d\n\
   -o, --url=URL         URL of mining server\n\
   -O, --userpass=U:P    username:password pair for mining server\n\
   -u, --user=USERNAME   username for mining server\n\
@@ -225,7 +216,6 @@ static char const short_options[] =
 	"a:c:Dhp:Px:qr:R:s:t:T:o:u:O:V";
 
 static struct option const options[] = {
-	{ "algo", 1, NULL, 'a' },
 #ifndef WIN32
 	{ "background", 0, NULL, 'B' },
 #endif
@@ -263,6 +253,7 @@ static struct option const options[] = {
 struct work {
 	uint32_t data[32];
 	uint32_t target[8];
+    uint32_t hash[8];
 
 	int height;
 	char *txs;
@@ -662,16 +653,22 @@ static bool submit_upstream_work(CURL *curl, struct work *work)
 
 	if (have_stratum) {
 		uint32_t ntime, nonce;
-		char ntimestr[9], noncestr[9], *xnonce2str;
+		char ntimestr[9], noncestr[9], hashhex[65], *xnonce2str;
 
 		le32enc(&ntime, work->data[17]);
 		le32enc(&nonce, work->data[19]);
 		bin2hex(ntimestr, (const unsigned char *)(&ntime), 4);
 		bin2hex(noncestr, (const unsigned char *)(&nonce), 4);
 		xnonce2str = abin2hex(work->xnonce2, work->xnonce2_len);
+        hashhex[64] = '\0';
+        for(i = 7; i >= 0; i--)
+        {
+            sprintf(hashhex + (7 - i)*8, "%08x", work->hash[i]);
+        }
+        applog(LOG_INFO, "Hash: %s", hashhex);
 		sprintf(s,
-			"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
-			rpc_user, work->job_id, xnonce2str, ntimestr, noncestr);
+			"{\"method\": \"mining.submit\", \"params\": [\"%s\", \"%s\", \"%s\", \"%s\", \"%s\", \"%s\"], \"id\":4}",
+			rpc_user, work->job_id, xnonce2str, ntimestr, noncestr, hashhex);
 		free(xnonce2str);
 
 		if (unlikely(!stratum_send_line(&stratum, s))) {
@@ -1051,11 +1048,8 @@ static void stratum_gen_work(struct stratum_ctx *sctx, struct work *work)
 		       work->job_id, xnonce2str, swab32(work->data[17]));
 		free(xnonce2str);
 	}
-
-	if (opt_algo == ALGO_SCRYPT)
-		diff_to_target(work->target, sctx->job.diff / 65536.0);
-	else
-		diff_to_target(work->target, sctx->job.diff);
+    
+    diff_to_target(work->target, sctx->job.diff);
 }
 
 static void *miner_thread(void *userdata)
@@ -1094,15 +1088,6 @@ static void *miner_thread(void *userdata)
 			       thr_id, thr_id % num_processors);
 		affine_to_cpu(thr_id, thr_id % num_processors);
 	}*/
-	
-	if (opt_algo == ALGO_SCRYPT) {
-		scratchbuf = scrypt_buffer_alloc(opt_scrypt_n);
-		if (!scratchbuf) {
-			applog(LOG_ERR, "scrypt buffer allocation failed");
-			pthread_mutex_lock(&applog_lock);
-			exit(1);
-		}
-	}
 
 	while (1) {
 		unsigned long hashes_done;
@@ -1154,12 +1139,6 @@ static void *miner_thread(void *userdata)
 		max64 *= thr_hashrates[thr_id];
 		if (max64 <= 0) {
 			switch (opt_algo) {
-			case ALGO_SCRYPT:
-				max64 = opt_scrypt_n < 16 ? 0x3ffff : 0x3fffff / opt_scrypt_n;
-				break;
-			case ALGO_SHA256D:
-				max64 = 0x1fffff;
-				break;
             case ALGO_RAMHOG:
 				max64 = 0x1;
 				break;
@@ -1175,18 +1154,8 @@ static void *miner_thread(void *userdata)
 
 		/* scan nonces for a proof-of-work hash */
 		switch (opt_algo) {
-		case ALGO_SCRYPT:
-			rc = scanhash_scrypt(thr_id, work.data, scratchbuf, work.target,
-			                     max_nonce, &hashes_done, opt_scrypt_n);
-			break;
-
-		case ALGO_SHA256D:
-			rc = scanhash_sha256d(thr_id, work.data, work.target,
-			                      max_nonce, &hashes_done);
-			break;
-            
 		case ALGO_RAMHOG:
-			rc = scanhash_ramhog(thr_id, work.data, work.target,
+			rc = scanhash_ramhog(thr_id, work.data, work.target, work.hash,
 			                      max_nonce, &hashes_done);
 			break;
 
@@ -1231,12 +1200,12 @@ out:
 	return NULL;
 }
 
-static void restart_threads(void)
+static void restart_threads(int prio)
 {
 	int i;
 
 	for (i = 0; i < opt_n_threads; i++)
-		work_restart[i].restart = 1;
+		work_restart[i].restart = prio;
 }
 
 static void *longpoll_thread(void *userdata)
@@ -1309,7 +1278,7 @@ start:
 				rc = work_decode(res, &g_work);
 			if (rc) {
 				time(&g_work_time);
-				restart_threads();
+				restart_threads(1);
 			}
 			pthread_mutex_unlock(&g_work_lock);
 			json_decref(val);
@@ -1318,10 +1287,10 @@ start:
 			g_work_time -= LP_SCANTIME;
 			pthread_mutex_unlock(&g_work_lock);
 			if (err == CURLE_OPERATION_TIMEDOUT) {
-				restart_threads();
+				restart_threads(1);
 			} else {
 				have_longpoll = false;
-				restart_threads();
+				restart_threads(1);
 				free(hdr_path);
 				free(lp_url);
 				lp_url = NULL;
@@ -1388,7 +1357,7 @@ static void *stratum_thread(void *userdata)
 			pthread_mutex_lock(&g_work_lock);
 			g_work_time = 0;
 			pthread_mutex_unlock(&g_work_lock);
-			restart_threads();
+			restart_threads(1);
 
 			if (!stratum_connect(&stratum, stratum.url) ||
 			    !stratum_subscribe(&stratum) ||
@@ -1410,10 +1379,16 @@ static void *stratum_thread(void *userdata)
 			stratum_gen_work(&stratum, &g_work);
 			time(&g_work_time);
 			pthread_mutex_unlock(&g_work_lock);
-			if (stratum.job.clean) {
-				applog(LOG_INFO, "Stratum requested work restart");
-				restart_threads();
-			}
+			if (stratum.job.clean)
+            {
+                restart_threads(1);
+                applog(LOG_INFO, "Stratum detected new block");
+            }
+            else
+            {
+                restart_threads(2);
+                applog(LOG_INFO, "Stratum requested work restart");
+            }
 		}
 		
 		if (!stratum_socket_full(&stratum, 120)) {
@@ -1504,31 +1479,6 @@ static void parse_arg(int key, char *arg, char *pname)
 	int v, i;
 
 	switch(key) {
-	case 'a':
-		for (i = 0; i < ARRAY_SIZE(algo_names); i++) {
-			v = strlen(algo_names[i]);
-			if (!strncmp(arg, algo_names[i], v)) {
-				if (arg[v] == '\0') {
-					opt_algo = i;
-					break;
-				}
-				if (arg[v] == ':' && i == ALGO_SCRYPT) {
-					char *ep;
-					v = strtol(arg+v+1, &ep, 10);
-					if (*ep || v & (v-1) || v < 2)
-						continue;
-					opt_algo = i;
-					opt_scrypt_n = v;
-					break;
-				}
-			}
-		}
-		if (i == ARRAY_SIZE(algo_names)) {
-			fprintf(stderr, "%s: unknown algorithm -- '%s'\n",
-				pname, arg);
-			show_usage_and_exit(1);
-		}
-		break;
 	case 'B':
 		opt_background = true;
 		break;

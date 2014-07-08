@@ -1,3 +1,6 @@
+#include "cpuminer-config.h"
+#include "miner.h"
+
 #include <memory.h>
 
 #include "ramhog.h"
@@ -31,7 +34,7 @@ static void xorshift_pbkdf2_seed(xorshift_ctx *ctx, const uint8_t *seed, size_t 
     ctx->p = (uint8_t)(fullSeed[16] & 63);
 }
 
-void ramhog_gen_pad(const uint8_t *input, size_t input_size,
+int ramhog_gen_pad(uint8_t thr_id, const uint8_t *input, size_t input_size,
                     uint32_t C, uint32_t padIndex,
                     uint64_t *padOut)
 {
@@ -45,13 +48,17 @@ void ramhog_gen_pad(const uint8_t *input, size_t input_size,
     
     for (chunk=2; chunk < C; chunk++)
     {
+        if(work_restart[thr_id].restart == 1)
+            return 1;
+            
         padOut[chunk] = xorshift_next(&ctx);
         if (!(padOut[chunk] & 511))
             padOut[chunk] ^= padOut[xorshift_next(&ctx) % (chunk/2) + chunk/2];
     }
+    return 0;
 }
 
-void ramhog_run_iterations(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size,
+int ramhog_run_iterations(uint8_t thr_id, const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size,
                            uint32_t N, uint32_t C, uint32_t I,
                            uint64_t **scratchpads)
 {
@@ -61,6 +68,9 @@ void ramhog_run_iterations(const uint8_t *input, size_t input_size, uint8_t *out
     uint64_t finalChunks[N * 32];
     uint64_t finalSalt[32] = {N, C, I, input_size, output_size};
     
+    if(work_restart[thr_id].restart == 1)
+        return 1;
+        
     for (padIndex=0; padIndex < N; padIndex++)
     {
         memcpy(&finalChunks[padIndex * 32], &scratchpads[padIndex][C - 1 - 32], sizeof(uint64_t) * 32);
@@ -70,32 +80,31 @@ void ramhog_run_iterations(const uint8_t *input, size_t input_size, uint8_t *out
     
     X = xorshift_next(&ctx);
     
+    if(work_restart[thr_id].restart == 1)
+        return 1;
+    
     for (i=0; i < I - (32 - 5); i++)
     {
         X = scratchpads[(X & 0xffffffff00000000L) & (N - 1)][(X & 0x00000000ffffffffL) % C] ^ xorshift_next(&ctx);
+        if(work_restart[thr_id].restart == 1)
+            return 1;
     }
     
     for (i=5; i < 32; i++)
     {
         X = scratchpads[(X & 0xffffffff00000000L) & (N - 1)][(X & 0x00000000ffffffffL) % C] ^ xorshift_next(&ctx);
         finalSalt[i] = X;
+        if(work_restart[thr_id].restart == 1)
+            return 1;
     }
     
     PBKDF2_SHA256(input, input_size,
                   (uint8_t *)finalSalt, sizeof(uint64_t)*32,
                   1, (uint8_t *)output, output_size);
-}
-
-void ramhog(const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size,
-            uint32_t N, uint32_t C, uint32_t I, uint64_t **scratchpads)
-{
-    uint32_t padIndex;
-    
-    for (padIndex=0; padIndex < N; padIndex++)
-    {
-        ramhog_gen_pad(input, input_size, C, padIndex, scratchpads[padIndex]);
-    }
-    
-    ramhog_run_iterations(input, input_size, output, output_size, N, C, I, scratchpads);
+                  
+    if(work_restart[thr_id].restart == 1)
+        return 1;
+        
+    return 0;
 }
 

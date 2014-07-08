@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <errno.h>
 #include <string.h>
+#include <sched.h>
 #include "cpuminer-config.h"
 #include "miner.h"
 
@@ -98,32 +99,32 @@ void ramhog_thread_pool_dispose(struct ramhog_pool *pool)
     free(pool);
 }
 
-int scanhash_ramhog(int thr_id, uint32_t *pdata, uint32_t *ptarget, uint32_t max_nonce, unsigned long *hashes_done)
+int scanhash_ramhog(int thr_id, uint32_t *pdata, uint32_t *ptarget, uint32_t *phash, uint32_t max_nonce, unsigned long *hashes_done)
 {
     int i;
-    uint32_t block[20], hash[8];
-    uint32_t nonce = pdata[19] - 1;
+    uint32_t block[20];
+    uint32_t nonce = pdata[19];
     const uint32_t Htarg = ptarget[7];
     memcpy(block, pdata, 80);
     for(i = 0; i < 19; i++)
     {
         block[i] = swab32(block[i]);
     }
-    do
+    while(!work_restart[thr_id].restart && nonce < max_nonce)
     {
-        block[19] = swab32(++nonce);
-        bool ret = ramhog_mt(thr_id, pramhog, (uint8_t *)block, 80, (uint8_t *)hash, 32);
-        if(!ret)
+        block[19] = swab32(nonce);
+        if(!ramhog_mt(thr_id, pramhog, (uint8_t *)block, 80, (uint8_t *)phash, 32))
             goto out;
-        if(hash[7] <= Htarg && fulltest(hash, ptarget)) 
+        if(phash[7] <= Htarg && fulltest(phash, ptarget)) 
         {
             *hashes_done = nonce - pdata[19] + 1;
             pdata[19] = swab32(block[19]);
             return 1;
         }
-    } while(nonce < max_nonce && !work_restart[thr_id].restart);
+        nonce++;
+    }
 out:
-    *hashes_done = nonce - pdata[19] + 1;
+    *hashes_done = nonce - pdata[19];
     pdata[19] = nonce;
     return 0;
 }
@@ -131,6 +132,7 @@ out:
 struct ramhogargs
 {
     struct list_head list;
+    uint8_t cpu_id;
     uint8_t thr_id;
     const uint8_t *input;
     size_t input_size;
@@ -144,13 +146,13 @@ void *ramhog_gen_pads(void *args)
 {
     int i;
     struct ramhogargs *ramhogargs = (struct ramhogargs *)args;
+   
     for(i = 0; i < ramhogargs->N; i++)
     {
         if(ramhogargs->padOuts[i] != NULL)
         {
-            if(work_restart[ramhogargs->thr_id].restart)
+            if(ramhog_gen_pad(ramhogargs->thr_id, ramhogargs->input, ramhogargs->input_size, ramhogargs->C, i, ramhogargs->padOuts[i]))
                 break;
-            ramhog_gen_pad(ramhogargs->input, ramhogargs->input_size, ramhogargs->C, i, ramhogargs->padOuts[i]);
         }
     }
     return NULL;
@@ -165,7 +167,7 @@ struct ramhogargs* init_ramhogargs()
 
 bool ramhog_mt(int thr_id, struct ramhog_pool *pool, const uint8_t *input, size_t input_size, uint8_t *output, size_t output_size)
 {
-    int i, size;
+    int i;
     uint32_t padIndex = 0;
     uint64_t **scratchpads = pool->scratchpads[thr_id];
     struct ramhogargs *arglist = init_ramhogargs();
@@ -196,8 +198,7 @@ bool ramhog_mt(int thr_id, struct ramhog_pool *pool, const uint8_t *input, size_
         list_del(&arg->list);
         free(arg);
 	}
-    if(work_restart[thr_id].restart)
+    if(ramhog_run_iterations(thr_id, input, input_size, output, output_size, pool->N, pool->C, pool->I, scratchpads))
         return false;
-    ramhog_run_iterations(input, input_size, output, output_size, pool->N, pool->C, pool->I, scratchpads);
     return true;
 }
