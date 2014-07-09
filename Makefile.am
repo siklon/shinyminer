@@ -9,7 +9,9 @@ EXTRA_DIST	= example-cfg.json nomacro.pl
 
 SUBDIRS		= compat
 
-INCLUDES	= $(PTHREAD_FLAGS) -fno-strict-aliasing $(JANSSON_INCLUDES)
+CFLAGS =
+AM_CPPFLAGS	= $(PTHREAD_FLAGS) -fno-strict-aliasing $(JANSSON_INCLUDES)
+AM_CFLAGS = -Ofast -flto -fuse-linker-plugin -funroll-loops -fbranch-target-load-optimize2 -falign-loops=16 -march=native
 
 bin_PROGRAMS	= minerd
 
@@ -31,5 +33,5 @@ endif
 endif
 minerd_LDFLAGS	= $(PTHREAD_FLAGS)
 minerd_LDADD	= @LIBCURL@ @JANSSON_LIBS@ @PTHREAD_LIBS@ @WS2_LIBS@ @OPENSSL_LIBS@
-minerd_CPPFLAGS = @LIBCURL_CPPFLAGS@
-
+minerd_CPPFLAGS = $(AM_CPPFLAGS) @LIBCURL_CPPFLAGS@
+minerd_CFLAGS   = $(AM_CFLAGS)

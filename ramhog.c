@@ -1,14 +1,71 @@
-#include <sys/mman.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <errno.h>
-#include <string.h>
-#include <sched.h>
+#define _GNU_SOURCE
 #include "cpuminer-config.h"
-#include "miner.h"
 
+#ifdef WIN32
+#include <windows.h>
+#else
+#include <errno.h>
+#include <signal.h>
+#include <sys/resource.h>
+#if HAVE_SYS_SYSCTL_H
+#include <sys/types.h>
+#if HAVE_SYS_PARAM_H
+#include <sys/param.h>
+#endif
+#include <sys/sysctl.h>
+#endif
+#endif
+
+#include "miner.h"
 #include "hashblock/ramhog.c"
 #include "elist.h"
+
+#if defined __unix__ && (!defined __APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#elif defined _WIN32
+#include <windows.h>
+#endif
+
+#ifdef __linux /* Linux specific policy and affinity management */
+#include <sched.h>
+static inline void drop_policy(void) {
+    struct sched_param param;
+    param.sched_priority = 0;
+
+	sched_setscheduler(0, SCHED_OTHER, &param);
+}
+
+static inline void affine_to_cpu(int id, int cpu) {
+    cpu_set_t set;
+
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    sched_setaffinity(0, sizeof(set), &set);
+}
+#elif defined(__FreeBSD__) /* FreeBSD specific policy and affinity management */
+#include <sys/cpuset.h>
+static inline void drop_policy(void)
+{
+}
+
+static inline void affine_to_cpu(int id, int cpu)
+{
+    cpuset_t set;
+    CPU_ZERO(&set);
+    CPU_SET(cpu, &set);
+    cpuset_setaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(cpuset_t), &set);
+}
+#else
+static inline void drop_policy(void)
+{
+}
+
+static inline void affine_to_cpu(int id, int cpu)
+{
+}
+#endif
+
 
 struct ramhog_pool *pramhog = NULL;
 
@@ -132,7 +189,8 @@ out:
 struct ramhogargs
 {
     struct list_head list;
-    uint8_t cpu_id;
+    uint8_t workers;
+    uint8_t id;
     uint8_t thr_id;
     const uint8_t *input;
     size_t input_size;
@@ -146,6 +204,8 @@ void *ramhog_gen_pads(void *args)
 {
     int i;
     struct ramhogargs *ramhogargs = (struct ramhogargs *)args;
+    
+    affine_to_cpu(ramhogargs->id, ramhogargs->id % ramhogargs->workers);
    
     for(i = 0; i < ramhogargs->N; i++)
     {
@@ -175,6 +235,8 @@ bool ramhog_mt(int thr_id, struct ramhog_pool *pool, const uint8_t *input, size_
     for(i = 0; i < pool->N; i++)
     {
         struct ramhogargs *args = init_ramhogargs();
+        args->id = i;
+        args->workers = pool->numWorkers;
         args->thr_id = thr_id;
         args->input = input;
         args->input_size = input_size;
